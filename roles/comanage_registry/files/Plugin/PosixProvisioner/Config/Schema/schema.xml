@@ -1,0 +1,24 @@
+<?xml version="1.0" ?>
+<schema version="0.3">
+  <table name="co_posix_provisioner_targets">
+    <field name="id" type="I">
+      <key />
+      <autoincrement />
+    </field>
+    <field name="co_provisioning_target_id" type="I">
+      <constraint>REFERENCES cm_co_provisioning_targets(id)</constraint>
+    </field>
+    <field name="co_ldap_provisioner_target_id" type="I">
+      <constraint>REFERENCES cm_co_ldap_provisioner_targets(id)</constraint>
+    </field>
+    <field name="cn" type="C" size="64" />
+    <field name="gid" type="C" size="64" />
+    <field name="created" type="T" />
+    <field name="modified" type="T" />
+
+    <index name="co_posix_provisioner_targets_i1">
+      <col>co_provisioning_target_id</col>
+      <unique />
+    </index>
+  </table>
+</schema>
