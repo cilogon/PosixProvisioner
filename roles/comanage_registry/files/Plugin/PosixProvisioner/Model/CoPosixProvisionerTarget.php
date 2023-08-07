@@ -210,19 +210,17 @@ class CoPosixProvisionerTarget extends CoProvisionerPluginTarget {
 
     if ($delete) {
       // this should catch when the dn is changed, such as uid modification
-      $sdn = @ldap_search($cxn,
+      $searchResult = ldap_search($cxn,
                           $ldapTarget['CoLdapProvisionerTarget']['group_basedn'],
                           "(&(gidNumber=$gidNumber)(objectClass=posixGroup))",
                           array('dn'));
-      if ($sdn) {
-        $entry = @ldap_first_entry($cxn,$sdn);
-        do {
-          $rmdn = @ldap_get_dn($cxn,$entry);
-          // Debugger::log($rmdn);
-          @ldap_delete($cxn, $rmdn);
-        } while ($entry = @ldap_next_entry($cxn,$sdn));
+      if($searchResult) {
+        $entries = ldap_get_entries($cxn, $searchResult);
+        for ($i=0; $i<$entries["count"]; $i++) {
+          $rmdn = $entries[$i]["dn"];
+          ldap_delete($cxn, $rmdn);
+        }
       }
-      @ldap_delete($cxn, $dn);
 
       // remove member from IGWN group
       unset($group);
