@@ -61,7 +61,12 @@ class CoPosixProvisionerTarget extends CoProvisionerPluginTarget {
    */
 
   public function provision($coProvisioningTargetData, $op, $provisioningData) {
-    // not relevant for groups
+    CakeLog::write('error', "CoPosixProvisioner provision is called");
+    CakeLog::write('error', "CoPosixProvisioner coProvisioningTargetData is " . print_r($coProvisioningTargetData, true));
+    CakeLog::write('error', "CoPosixProvisioner op is " . print_r($op, true));
+    CakeLog::write('error', "CoPosixProvisioner provisioningData is " . print_r($provisioningData, true));
+
+    // We only provision CO Person objects and not CO Group objects.
     if (isset($provisioningData['CoGroup']['id'])) {
       return true;
     }
@@ -77,14 +82,26 @@ class CoPosixProvisionerTarget extends CoProvisionerPluginTarget {
       case ProvisioningActionEnum::CoPersonPipelineProvisioned:
       case ProvisioningActionEnum::CoPersonReprovisionRequested:
       case ProvisioningActionEnum::CoPersonUpdated:
-        // just reprovision the group if update, but only if the person is still active or in grace
+        // We only provision CO Person records with status Active or GracePeriod.
         if(in_array($provisioningData['CoPerson']['status'],
                     array(StatusEnum::Active,
                           StatusEnum::GracePeriod))) {
           $add = true;
         }
 
-        $delete = true;  // for housekeeping, it may fail
+        // Unlike the LDAP Provisioner, this provisioner does not record the DN written
+        // to the LDAP directory in an SQL table so that if there are later changes
+        // needed to the DN (for example if the Identifier changes and so the CN changes)
+        // then the DN can be looked up and a modification/move invoked.
+        //
+        // Rather, it takes the approach of always doing a search/delete/add approach (for
+        // add and modify). When the CO Person record is "deleted" then only a search/delete
+        // is done. The search filter is based on the gidNumber, which is assumed to never
+        // change.
+        //
+        // That is why delete is set to true here, and the test of delete below happens
+        // before the test for add and modify.
+        $delete = true;
         break;
 
       case ProvisioningActionEnum::CoPersonExpired:
@@ -95,7 +112,9 @@ class CoPosixProvisionerTarget extends CoProvisionerPluginTarget {
         // no change to user group at this point
         break;
       default:
-        throw new RuntimeException("Provisioning action not handled");
+        $msg = "CoPosixProvisioner Provisioning action not handled";
+        CakeLog::write('error', $msg);
+        throw new RuntimeException($msg);
         break;
     }
 
@@ -108,161 +127,197 @@ class CoPosixProvisionerTarget extends CoProvisionerPluginTarget {
     $ldapTarget = $CoLdapProvisionerTarget->find('first', $args);
 
     if(empty($ldapTarget)) {
-      throw new RuntimeException("No valid ldap provisioner specified");
+      $msg = "CoPosixProvisioner No valid LDAP provisioner specified";
+      CakeLog::write('error', $msg);
+      throw new RuntimeException($msg);
     }
 
-    //Debugger::log($provisioningData);
-    // assemble group attributes from identifiers
+    $groupBaseDn = $ldapTarget['CoLdapProvisionerTarget']['group_basedn'];
+
+    // Inspect the Identifiers for the CO Person record and for the
+    // configured Identifier type construct the DN. Also record
+    // the gidNumber and uidNumber to be used for the summary
+    // posixGroup.
     foreach($provisioningData['Identifier'] as $identifier) {
       if(!empty($identifier['type'])
          && !empty($identifier['identifier'])
          && $identifier['status'] == StatusEnum::Active) {
 
             if ($identifier['type'] == $ldapTarget['CoLdapProvisionerTarget']['dn_identifier_type']) {
-                $dn = "cn=" . $identifier['identifier']
-                    . "," . $ldapTarget['CoLdapProvisionerTarget']['group_basedn'];
-
-                $member = $ldapTarget['CoLdapProvisionerTarget']['dn_identifier_type']
-                        . "=" . $identifier['identifier']
-                        . "," . $ldapTarget['CoLdapProvisionerTarget']['basedn'];
-
                 $cn = $identifier['identifier'];
+                $dn = "cn=" . $cn . "," . $groupBaseDn;
             }
 
             if ($identifier['type'] == 'gidNumber') {
                  $gidNumber = $identifier['identifier'];
             }
+
             if ($identifier['type'] == 'uid') {
                  $uidNumber = $identifier['identifier'];
             }
-
-
       }
     }
 
     if(empty($gidNumber)) {
-        throw new UnderflowException('gidNumber not set');
+      $msg = "CoPosixProvisioner gidNumber not set";
+      CakeLog::write('error', $msg);
+      throw new UnderflowException($msg);
     }
 
     if (empty($dn)) {
-        throw new UnderflowException('dn not set');
+      $msg = "CoPosixProvisioner DN not set";
+      CakeLog::write('error', $msg);
+      throw new UnderflowException($msg);
     }
 
     if(empty($uidNumber)) {
-        throw new UnderflowException('uid not set');
+      $msg = "CoPosixProvisioner uid not set";
+      CakeLog::write('error', $msg);
+      throw new UnderflowException($msg);
     }
-    // Modify the LDAP entry
 
+    CakeLog::write('error', "CoPosixProvisoner posixGroup DN is " . $dn);
+
+    // Construct the attributes for the posixGroup record.
     $attributes = array();
-
-    //$attributes['uniqueMember'] = $member;
+    $attributes['objectClass'] = ['posixGroup'];
     $attributes['cn'] = $cn;
     $attributes['gidNumber'] = $gidNumber;
-    //$attributes['objectClass'] = [ 'top','posixGroup','groupOfUniqueNames' ];
-    $attributes['objectClass'] = ['posixGroup'];
 
-    // Bind to the server
+    CakeLog::write('error', "CoPosixProvisioner posixGroup attributes are " . print_r($attributes, true));
 
+    // Bind to the server.
     $cxn = ldap_connect($ldapTarget['CoLdapProvisionerTarget']['serverurl']);
 
     if(!$cxn) {
-      throw new RuntimeException(_txt('er.ldapprovisioner.connect'), 0x5b /*LDAP_CONNECT_ERROR*/);
+      $msg =_txt('er.ldapprovisioner.connect');
+      CakeLog::write('error', $msg);
+      throw new RuntimeException($msg, 0x5b /*LDAP_CONNECT_ERROR*/);
     }
 
-    // Use LDAP v3 (this could perhaps become an option at some point), although note
-    // that ldap_rename (used below) *requires* LDAP v3.
     ldap_set_option($cxn, LDAP_OPT_PROTOCOL_VERSION, 3);
 
     if(!@ldap_bind($cxn,
                    $ldapTarget['CoLdapProvisionerTarget']['binddn'],
                    $ldapTarget['CoLdapProvisionerTarget']['password'])) {
+      CakeLog::write('error', ldap_error($cxn));
+      CakeLog::write('error', ldap_errno($cxn));
       throw new RuntimeException(ldap_error($cxn), ldap_errno($cxn));
     }
 
-    $summaryGroupDn="cn=".$coProvisioningTargetData['CoPosixProvisionerTarget']['cn'].",".$ldapTarget['CoLdapProvisionerTarget']['group_basedn'];
-    Debugger::log("the summaryGroupDn="  . $summaryGroupDn);
-
-    /* check if summary group exists in LDAP. I f it was not, create it. */
-    $sr=@ldap_search( $cxn,
-    $ldapTarget['CoLdapProvisionerTarget']['group_basedn'],
-      "(cn=" . $coProvisioningTargetData['CoPosixProvisionerTarget']['cn']. ")",
-      array('dn','cn') );
-
-    $data = ldap_first_entry($cxn, $sr );
-
-    $summaryGroupFound = 0;
-    if($data) $summaryGroupFound = 1;
-    Debugger::log( "summaryGroupFound???:" . $summaryGroupFound );
-    if( $summaryGroupFound == 0 ) //twas not found, so create it
-    {
-      Debugger::log( "Creating summary group." );
-      unset($entry);
-      $entry['objectClass'][] = 'top';
-      $entry['objectClass'][] = 'posixGroup';
-      $entry['gidNumber'] = $coProvisioningTargetData['CoPosixProvisionerTarget']['gid'];
-
-      if(!@ldap_add($cxn, $summaryGroupDn, $entry)) {
-        throw new RuntimeException(ldap_error($cxn), ldap_errno($cxn));
-      }
-      unset($entry);
-    }
-    /* End of block checking for summary group */
+    // The test for delete must remain first. See comments above for
+    // why.
 
     if ($delete) {
-      // this should catch when the dn is changed, such as uid modification
-      $searchResult = ldap_search($cxn,
-                          $ldapTarget['CoLdapProvisionerTarget']['group_basedn'],
-                          "(&(gidNumber=$gidNumber)(objectClass=posixGroup))",
-                          array('dn'));
+      // Search to find the record, but in order to more easily handle
+      // DN changes (because the CN changed because the Identifier value
+      // changed), search using the gidNumber, which should not change.
+      $filter = "(&(gidNumber=$gidNumber)(objectClass=posixGroup))";
+      CakeLog::write('error', "CoPosixProvisioner Searching using filter " . $filter);
+
+      $searchResult = ldap_search($cxn, $groupBaseDn, $filter, array('dn'));
+
+      // If we found a record then delete it.
       if($searchResult) {
         $entries = ldap_get_entries($cxn, $searchResult);
-        for ($i=0; $i<$entries["count"]; $i++) {
+        $entryCount = $entries["count"];
+        CakeLog::write('error', "CoPosixProvisioner found $entryCount records");
+
+        for ($i = 0; $i < $entryCount; $i++) {
           $rmdn = $entries[$i]["dn"];
+          CakeLog::write('error', "CoPosixProvisioner About to delete DN " . $rmdn);
           ldap_delete($cxn, $rmdn);
+          CakeLog::write('error', "CoPosixProvisioner Deleted DN " . $rmdn);
         }
       }
-
-      // remove member from IGWN group
-      unset($group);
-      $group['memberUid'] =  $uidNumber;
-
-      Debugger::log("Doing delete of ". $uidNumber . " on " . $summaryGroupDn);
-      @ldap_mod_del($cxn, $summaryGroupDn, $group); // eat the delete error. Modify use case seems to call delete than error, and the value may not exist legitimately. And if we want to just scrug the records and add from scratch, eating error makes sense.
-
     }
 
     if ($add) {
+      CakeLog::write('error', "CoPosixProvisioner About to add DN " . $dn);
+      CakeLog::write('error', "CoPosixProvisioner attributes is " . print_r($attributes, true));
       if(!@ldap_add($cxn, $dn, $attributes)) {
+        CakeLog::write('error', ldap_error($cxn));
+        CakeLog::write('error', ldap_errno($cxn));
         throw new RuntimeException(ldap_error($cxn), ldap_errno($cxn));
       }
 
-      // add member to IGWN group
-      unset($group);
-      $group['memberUid'] =  $uidNumber;
-      Debugger::log("Doing mod_add of ". $uidNumber . " on " . $summaryGroupDn);
-      if(!@ldap_mod_add($cxn, $summaryGroupDn, $group)) {
-        throw new RuntimeException(ldap_error($cxn), ldap_errno($cxn));
-        Debugger::log(ldap_error($cxn));
-      }
+      CakeLog::write('error', "CoPosixProvisioner Added DN " . $dn);
     }
 
     if ($modify) {
+      CakeLog::write('error', "CoPosixProvisioner About to replace DN " . $dn);
+      CakeLog::write('error', "CoPosixProvisioner attributes is " . print_r($attributes, true));
       if(!@ldap_mod_replace($cxn, $dn, $attributes)) {
+        CakeLog::write('error', ldap_error($cxn));
+        CakeLog::write('error', ldap_errno($cxn));
         throw new RuntimeException(ldap_error($cxn), ldap_errno($cxn));
       }
 
-      // add member to IGWN group
-      unset($group);
-      $group['memberUid'] =  $uidNumber;
-      Debugger::log("Doing mod_replace of ". $uidNumber . " on " . $summaryGroupDn);
-      if(!@ldap_mod_replace($cxn, $summaryGroupDn, $group)) {
-        throw new RuntimeException(ldap_error($cxn), ldap_errno($cxn));
+      CakeLog::write('error', "CoPosixProvisioner Replaced DN " . $dn);
+    }
+
+    // The work for the individual CO Person posixGroup is completed.
+
+    // Next consider the single summary posixGroup.
+
+    $summaryGroupCn = $coProvisioningTargetData['CoPosixProvisionerTarget']['cn'];
+    $summaryGroupDn = "cn=" . $summaryGroupCn . "," . $groupBaseDn;
+    $summaryGroupGid = $coProvisioningTargetData['CoPosixProvisionerTarget']['gid'];
+
+    CakeLog::write('error', "CoPosixProvisioner Summary Group DN is $summaryGroupDn");
+
+    // Check if summary group exists in the directory and if not create it.
+    $filter = "(cn=" . $summaryGroupCn . ")";
+    $searchResult = ldap_search($cxn, $groupBaseDn, $filter, array('dn','cn'));
+
+    if($searchResult) {
+      $entries = ldap_get_entries($cxn, $searchResult);
+      $entryCount = $entries["count"];
+      CakeLog::write('error', "CoPosixProvisioner found $entryCount records for the summary group with DN $summaryGroupDn");
+
+      if($entryCount < 1) {
+        CakeLog::write('error', "CoPosixProvisioner creating record with DN $summaryGroupDn");
+        $attributes = array();
+        $attributes['objectClass'] = ['posixGroup'];
+        $attributes['gidNumber'] = $summaryGroupGid;
+
+        CakeLog::write('error', "CoPosixProvisioner summary group attributes are " . print_r($attributes, true));
+
+        if(!ldap_add($cxn, $summaryGroupDn, $attributes)) {
+          CakeLog::write('error', ldap_error($cxn));
+          CakeLog::write('error', ldap_errno($cxn));
+          throw new RuntimeException(ldap_error($cxn), ldap_errno($cxn));
+        }
+
+        CakeLog::write('error', "CoPosixProvisioner created record with DN $summaryGroupDn");
+      } else {
+        CakeLog::write('error', "CoPosixProvisioner Summary Group with DN $summaryGroupDn exists in directory");
       }
     }
 
-    // Drop the connection
+    $attributes = array();
+    $attributes['memberUid'] = $uidNumber;
+
+    if($delete && !$add) {
+      // Remove the user from the summary group.
+      CakeLog::write('error', "CoPosixProvisioner removing attribute memberUid = $uidNumber from summary group DN $summaryGroupDn");
+
+      // Eat the delete error. Modify use case seems to call delete than error, and the value may not exist legitimately.
+      // And if we want to just scrug the records and add from scratch, eating error makes sense.
+      ldap_mod_del($cxn, $summaryGroupDn, $attributes);
+    }
+
+    if($add) {
+      // Add the user to the summary group.
+      CakeLog::write('error', "CoPosixProvisioner adding attribute memberUid = $uidNumber to summary group DN $summaryGroupDn");
+
+      ldap_mod_add($cxn, $summaryGroupDn, $attributes);
+    }
+
+    // Unbind the connection.
     ldap_unbind($cxn);
+
+    // Return true to signal the provisioning succeeded.
     return true;
   }
-
 }
