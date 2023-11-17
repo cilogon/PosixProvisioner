@@ -205,55 +205,59 @@ class CoPosixProvisionerTarget extends CoProvisionerPluginTarget {
       throw new RuntimeException(ldap_error($cxn), ldap_errno($cxn));
     }
 
-    // The test for delete must remain first. See comments above for
-    // why.
+    // Only modify the directory with the individual CO Person record posixGroup 
+    // when the summary group has cn=IGWN (exclude cn=cwarchive and all others).
+    if($coProvisioningTargetData['CoPosixProvisionerTarget']['cn'] == 'IGWN') {
+      // The test for delete must remain first. See comments above for
+      // why.
 
-    if ($delete) {
-      // Search to find the record, but in order to more easily handle
-      // DN changes (because the CN changed because the Identifier value
-      // changed), search using the gidNumber, which should not change.
-      $filter = "(&(gidNumber=$gidNumber)(objectClass=posixGroup))";
-      CakeLog::write('error', "CoPosixProvisioner Searching using filter " . $filter);
+      if ($delete) {
+        // Search to find the record, but in order to more easily handle
+        // DN changes (because the CN changed because the Identifier value
+        // changed), search using the gidNumber, which should not change.
+        $filter = "(&(gidNumber=$gidNumber)(objectClass=posixGroup))";
+        CakeLog::write('error', "CoPosixProvisioner Searching using filter " . $filter);
 
-      $searchResult = ldap_search($cxn, $groupBaseDn, $filter, array('dn'));
+        $searchResult = ldap_search($cxn, $groupBaseDn, $filter, array('dn'));
 
-      // If we found a record then delete it.
-      if($searchResult) {
-        $entries = ldap_get_entries($cxn, $searchResult);
-        $entryCount = $entries["count"];
-        CakeLog::write('error', "CoPosixProvisioner found $entryCount records");
+        // If we found a record then delete it.
+        if($searchResult) {
+          $entries = ldap_get_entries($cxn, $searchResult);
+          $entryCount = $entries["count"];
+          CakeLog::write('error', "CoPosixProvisioner found $entryCount records");
 
-        for ($i = 0; $i < $entryCount; $i++) {
-          $rmdn = $entries[$i]["dn"];
-          CakeLog::write('error', "CoPosixProvisioner About to delete DN " . $rmdn);
-          ldap_delete($cxn, $rmdn);
-          CakeLog::write('error', "CoPosixProvisioner Deleted DN " . $rmdn);
+          for ($i = 0; $i < $entryCount; $i++) {
+            $rmdn = $entries[$i]["dn"];
+            CakeLog::write('error', "CoPosixProvisioner About to delete DN " . $rmdn);
+            ldap_delete($cxn, $rmdn);
+            CakeLog::write('error', "CoPosixProvisioner Deleted DN " . $rmdn);
+          }
         }
       }
-    }
 
-    if ($add) {
-      CakeLog::write('error', "CoPosixProvisioner About to add DN " . $dn);
-      CakeLog::write('error', "CoPosixProvisioner attributes is " . print_r($attributes, true));
-      if(!@ldap_add($cxn, $dn, $attributes)) {
-        CakeLog::write('error', ldap_error($cxn));
-        CakeLog::write('error', ldap_errno($cxn));
-        throw new RuntimeException(ldap_error($cxn), ldap_errno($cxn));
+      if ($add) {
+        CakeLog::write('error', "CoPosixProvisioner About to add DN " . $dn);
+        CakeLog::write('error', "CoPosixProvisioner attributes is " . print_r($attributes, true));
+        if(!@ldap_add($cxn, $dn, $attributes)) {
+          CakeLog::write('error', ldap_error($cxn));
+          CakeLog::write('error', ldap_errno($cxn));
+          throw new RuntimeException(ldap_error($cxn), ldap_errno($cxn));
+        }
+
+        CakeLog::write('error', "CoPosixProvisioner Added DN " . $dn);
       }
 
-      CakeLog::write('error', "CoPosixProvisioner Added DN " . $dn);
-    }
+      if ($modify) {
+        CakeLog::write('error', "CoPosixProvisioner About to replace DN " . $dn);
+        CakeLog::write('error', "CoPosixProvisioner attributes is " . print_r($attributes, true));
+        if(!@ldap_mod_replace($cxn, $dn, $attributes)) {
+          CakeLog::write('error', ldap_error($cxn));
+          CakeLog::write('error', ldap_errno($cxn));
+          throw new RuntimeException(ldap_error($cxn), ldap_errno($cxn));
+        }
 
-    if ($modify) {
-      CakeLog::write('error', "CoPosixProvisioner About to replace DN " . $dn);
-      CakeLog::write('error', "CoPosixProvisioner attributes is " . print_r($attributes, true));
-      if(!@ldap_mod_replace($cxn, $dn, $attributes)) {
-        CakeLog::write('error', ldap_error($cxn));
-        CakeLog::write('error', ldap_errno($cxn));
-        throw new RuntimeException(ldap_error($cxn), ldap_errno($cxn));
+        CakeLog::write('error', "CoPosixProvisioner Replaced DN " . $dn);
       }
-
-      CakeLog::write('error', "CoPosixProvisioner Replaced DN " . $dn);
     }
 
     // The work for the individual CO Person posixGroup is completed.
